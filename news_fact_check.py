@@ -8,9 +8,12 @@ import requests
 import openai
 import streamlit as st
 from dotenv import load_dotenv # .env 파일 로드
+import json
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 from bs4 import BeautifulSoup
 from newspaper import Article
 
@@ -33,6 +36,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
     st.error("OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 설정해주세요.")
     st.stop()
+
+# Google Gemini API 키 설정
+GEMINI_API_KEY = os.getenv("GOOGLE_GEMINI_API_KEY", "f438158f8d45f67aede74b4a639e23a8365974ce")
+genai.configure(api_key=GEMINI_API_KEY)
 
 # 도메인별 신뢰도 점수 (예시)
 DOMAIN_TRUST_SCORES = {
@@ -203,75 +210,136 @@ def fetch_snippet(url: str) -> str:
     except:
         return ""
 
-def verify_claim_with_llm(claim: str, evidence_list: list) -> str:
-    """
-    claim(주장)과 evidence_list(검색으로 모은 각 페이지의 간단 요약)을 바탕으로,
-    GPT-4에 사실 여부 판정을 요청. 
-    결과 문자열 예: "사실: ...", "거짓: ...", "불확실: ..."
-    """
-    if not evidence_list:
-        # 근거가 전혀 없으면 "불확실"로 처리
-        return "불확실 (검색 결과 없음)"
-    
-    evidence_text = "\n".join([f"{i+1}. {ev}" for i, ev in enumerate(evidence_list)])
-    prompt = (
-        "당신은 사실 관계를 평가해주는 전문가입니다. "
-        "사용자가 제시한 주장과 검색 결과를 보고 사실 여부를 판단해주세요.\n\n"
-        f"주장: \"{claim}\"\n\n"
-        "[검색 결과]\n"
-        f"{evidence_text}\n\n"
-        "위 정보를 참고하여 아래 형식으로 답변:\n"
-        "1) \"사실\", \"거짓\", \"불확실\" 중 하나.\n"
-        "2) 짧은 사유.\n"
-        "(예: \"사실: 여러 기사가 일치한다고 보도하고 있습니다.\")"
-    )
-    try:
-        # 최신 OpenAI API 형식으로 업데이트
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=200
-        )
-        result = response.choices[0].message.content.strip()
-        return result
-    except Exception as e:
-        st.error(f"판정 중 오류 발생: {str(e)}")
-        return "불확실 (LLM 오류)"
+# Google Fact Check API 관련 코드!!!
+# 기존 get_factcheck_results와 verify_claim_with_factcheck_api 함수 제거
+# def get_factcheck_results(claim: str) -> list:
+# def verify_claim_with_factcheck_api(claim: str) -> dict:
 
+def verify_claim_with_gemini(claim: str, evidence_list: list) -> dict:
+    """
+    Google Gemini API를 사용하여 주장에 대한 팩트체크를 수행합니다.
+    """
+    try:
+        # 증거 텍스트 준비
+        evidence_text = "\n".join([f"{i+1}. {ev}" for i, ev in enumerate(evidence_list)])
+        
+        # 프롬프트 작성
+        prompt = f"""당신은 검증된 정보를 바탕으로 팩트체크를 수행하는 전문가입니다.
+다음 주장을 검증하고 사실 여부를 판단해주세요.
+
+주장: "{claim}"
+
+아래는 이 주장과 관련된 검색 결과입니다:
+{evidence_text}
+
+위 정보를 바탕으로, 다음 형식으로 주장의 사실 여부를 평가해주세요:
+1. 판정 - "사실", "거짓", "부분 사실", "불확실" 중 하나를 선택
+2. 이유 - 판정 이유를 간략히 설명 (2-3 문장)
+
+답변 형식: "판정: 판정 이유"
+예: "사실: 다수의 신뢰할 수 있는 출처에서 확인된 정보입니다."
+"""
+        
+        # Gemini 모델 설정
+        generation_config = {
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 300,
+        }
+
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+        
+        # Gemini API 호출
+        model = genai.GenerativeModel(
+            model_name="gemini-1.0-pro",
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
+        
+        response = model.generate_content(prompt)
+        verdict = response.text.strip()
+        
+        # 판정 결과 반환
+        return {
+            "verdict": verdict,
+            "is_from_gemini": True
+        }
+    except Exception as e:
+        st.error(f"Gemini API 호출 중 오류 발생: {str(e)}")
+        return {
+            "verdict": f"불확실: Gemini API 오류 - {str(e)}",
+            "is_from_gemini": False
+        }
+
+# 기존 get_factcheck_results 함수를 대체하는 함수
+def get_factcheck_with_gemini(claim: str) -> dict:
+    """
+    주장에 대해 웹 검색 후 Gemini API로 팩트체크를 수행합니다.
+    """
+    try:
+        # 웹 검색으로 관련 정보 수집
+        query = f"{claim} 사실 여부"
+        result_urls = search_web(query, num_results=5)
+        snippets = [fetch_snippet(u) for u in result_urls if u]
+        
+        if not snippets:
+            return {
+                "verdict": "불확실: 관련 정보를 충분히 찾지 못했습니다.",
+                "is_from_gemini": False
+            }
+        
+        # Gemini로 팩트체크 수행
+        result = verify_claim_with_gemini(claim, snippets)
+        return result
+        
+    except Exception as e:
+        st.error(f"팩트체크 중 오류 발생: {str(e)}")
+        return {
+            "verdict": "불확실 (처리 오류)",
+            "is_from_gemini": False
+        }
+
+# Gemini 결과를 바탕으로 신뢰도 점수 계산
 def score_content_trust(claim_verifications: dict) -> int:
     """
-    LLM이 판정한 '사실/거짓/불확실' 결과를 종합해 기사 내용 신뢰도(0~100) 산정.
+    Gemini가 판정한 '사실/거짓/불확실/부분 사실' 결과를 종합해 기사 내용 신뢰도(0~100) 산정.
     - 사실: +1
-    - 거짓: -0.2 총점에서 20점 감산 (단순 예시)
+    - 거짓: -0.2 총점에서 20점 감산
     - 불확실: 0.5로 처리 
+    - 부분 사실: 0.7로 처리
     """
     if not claim_verifications:
         return 50  # 검증할 주장 없음 → 중립 점수
 
     results = list(claim_verifications.values())
     # 사실 판정
-    fact_count = sum("사실" in r for r in results)
+    fact_count = sum("사실:" in r or "사실 " in r or r.startswith("사실") for r in results)
     # 거짓 판정
-    false_count = sum("거짓" in r for r in results)
+    false_count = sum("거짓:" in r or "거짓 " in r or r.startswith("거짓") for r in results)
     # 불확실 판정
-    uncertain_count = sum("불확실" in r for r in results)
+    uncertain_count = sum("불확실:" in r or "불확실 " in r or r.startswith("불확실") for r in results)
+    # 부분 사실 판정
+    partial_count = sum("부분 사실:" in r or "부분 사실 " in r or "부분사실" in r or r.startswith("부분 사실") for r in results)
 
     total_claims = len(results)
 
     # 사실 비율
-    fact_ratio = fact_count / total_claims  
-    # 단순하게 fact_ratio * 100 (기본점수)에서 거짓 당 20점씩 빼기
-    base_score = fact_ratio * 100.0
-    penalty = false_count * 20
-
-    # 불확실한 주장들은 사실/거짓 중간 정도라 가정해 보정 가능(옵션)
-    # 예를 들어 불확실 1개당 -10점 하는 등...
+    fact_ratio = fact_count / total_claims
+    # 부분 사실 점수 (70%)
+    partial_ratio = 0.7 * partial_count / total_claims
+    # 기본 점수 계산
+    base_score = (fact_ratio + partial_ratio) * 100.0
+    # 페널티 계산
+    false_penalty = false_count * 20
     uncertain_penalty = uncertain_count * 10
 
-    final_score = base_score - penalty - uncertain_penalty
+    final_score = base_score - false_penalty - uncertain_penalty
     if final_score < 0:
         final_score = 0
     if final_score > 100:
@@ -327,17 +395,16 @@ def main():
 
             # 5) 웹 검색 & 검증
             claim_verifications = {}
-            if claims and search:
+            if claims:
                 with st.spinner("주요 주장들을 검증하는 중..."):
                     for c in claims:
-                        # 검색
-                        query = f"{c} 사실 여부"
-                        result_urls = search_web(query, num_results=3)
-                        # 각 URL에 대해 snippet 추출
-                        snippets = [fetch_snippet(u) for u in result_urls if u]
-                        # LLM 검증
-                        verdict = verify_claim_with_llm(c, snippets)
-                        claim_verifications[c] = verdict
+                        # Google Gemini를 활용한 팩트체크
+                        result = get_factcheck_with_gemini(c)
+                        claim_verifications[c] = result["verdict"]
+                        
+                        # Gemini에서 검증된 결과인 경우 표시
+                        if result["is_from_gemini"]:
+                            st.info(f"주장 \"{c}\"은(는) Google Gemini AI로 검증되었습니다.")
 
             # 6) 내용 신뢰도 점수
             content_score = score_content_trust(claim_verifications)
