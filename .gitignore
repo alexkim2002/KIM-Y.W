@@ -1,0 +1,25 @@
+# 가상 환경
+venv/
+.venv/
+env/
+ENV/
+
+# 환경 변수 파일 (API 키 포함)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 캐시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# 로그 파일
+*.log
+
+# 시스템 파일
+.DS_Store
+Thumbs.db 
