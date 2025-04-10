@@ -1,0 +1,29 @@
+# 가상 환경
+venv/
+.venv/
+env/
+ENV/
+
+# 환경 변수 파일 (API 키 포함)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 캐시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# 로그 파일
+*.log
+
+# 시스템 파일
+.DS_Store
+Thumbs.db 
+
+# 추가된 코드 블록
+OPENAI_API_KEY = "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"
+GOOGLE_GEMINI_API_KEY = "f438158f8d45f67aede74b4a639e23a8365974ce" 
